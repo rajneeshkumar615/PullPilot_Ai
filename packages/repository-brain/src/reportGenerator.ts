@@ -1,4 +1,5 @@
 import type { RepositorySnapshot } from "./types.js";
+import type { RepositoryReport } from "./report.js";
 
 import { buildStatistics } from "./statistics.js";
 import { buildDependencyGraph } from "./dependencyGraph.js";
@@ -7,57 +8,10 @@ import { detectCycles } from "./cycleDetector.js";
 import { analyzeComplexity } from "./complexity.js";
 import { analyzeArchitecture } from "./architecture.js";
 import { buildSymbolIndex } from "./symbolIndex.js";
+import { buildKnowledgeGraph } from "./knowledgeGraph.js";
 import { analyzeRepositoryIntelligence } from "./intelligence.js";
 import { analyzeGitRepository } from "./gitAnalyzer.js";
-
-export interface RepositoryReport {
-  generatedAt: string;
-
-  summary: {
-    totalFiles: number;
-    totalLines: number;
-    languages: unknown;
-  };
-
-  architecture: unknown;
-
-  dependencies: {
-    total: number;
-    external: number;
-    internal: number;
-  };
-
-  cycles: unknown;
-
-  complexity: {
-    files: number;
-    highRisk: number;
-  };
-
-  symbols: number;
-
-  git: {
-    totalCommits: number;
-    contributors: number;
-    recentCommits: {
-      hash: string;
-      author: string;
-      message: string;
-      date: string;
-    }[];
-  };
-
-  intelligence: {
-    overallScore: number;
-    maintainability: number;
-    scalability: number;
-    architecture: number;
-    dependencyHealth: number;
-    codeQuality: number;
-    summary: string;
-  };
-}
-
+ 
 export async function generateRepositoryReport(
   snapshot: RepositorySnapshot
 ): Promise<RepositoryReport> {
@@ -74,6 +28,9 @@ export async function generateRepositoryReport(
   const architecture = await analyzeArchitecture(snapshot);
 
   const symbols = await buildSymbolIndex(snapshot);
+
+  const knowledgeGraph =
+    buildKnowledgeGraph(snapshot);
 
   const git = await analyzeGitRepository(snapshot.root);
 
@@ -114,6 +71,11 @@ export async function generateRepositoryReport(
     },
 
     symbols: symbols.length,
+
+    knowledgeGraph: {
+      nodes: knowledgeGraph.nodes.length,
+      edges: knowledgeGraph.edges.length,
+    },
 
     git: {
       totalCommits: git.totalCommits,

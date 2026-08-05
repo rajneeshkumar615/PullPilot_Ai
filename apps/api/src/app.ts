@@ -3,6 +3,8 @@ import cors from "cors";
 import helmet from "helmet";
 import morgan from "morgan";
 
+import repositoryRoutes from "./routes/repository.routes.js";
+
 const app: Express = express();
 
 app.use(helmet());
@@ -17,5 +19,8 @@ app.get("/api/health", (_req, res) => {
     message: "Health route works!",
   });
 });
+
+// Repository Brain API
+app.use("/api/repository", repositoryRoutes);
 
 export default app;

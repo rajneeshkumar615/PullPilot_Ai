@@ -10,27 +10,21 @@ export async function analyzeRepository(
   repositoryPath: string
 ) {
   const snapshot = await createSnapshot(repositoryPath);
-  
-  const repository = await generateRepositoryReport(snapshot);
-  
-  const response = await analyzeWithAI(repository);
 
-  console.log("RAW RESPONSE TYPE:", typeof response);
-  console.log("RAW RESPONSE:", response);
+  const report = await generateRepositoryReport(snapshot);
+
+  const response = await analyzeWithAI(report);
 
   const ai = parseAIResponse(response);
 
-  console.log("PARSED TYPE:", typeof ai);
-  console.log("PARSED AI:", JSON.stringify(ai, null, 2));
+  const insights = buildInsights(report);
 
-  const insights = buildInsights(repository);
-  
-  const health = calculateHealth(repository);
+  const health = calculateHealth(report);
 
-  const metrics = buildMetrics(repository);
+  const metrics = buildMetrics(report);
 
   return {
-    repository,
+    repository: report,
     ai,
     insights,
     health,
