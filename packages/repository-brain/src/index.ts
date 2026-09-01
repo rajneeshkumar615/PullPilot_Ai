@@ -6,9 +6,21 @@ import { buildInsights } from "./insightsEngine.js";
 import { calculateHealth } from "./healthScore.js";
 import { buildMetrics } from "./metrics.js";
 
+export {
+  analyzePullRequest,
+  generatePRFix,
+  applyPRFix,
+} from "./prAnalyzer.js";
+
+export {
+  getPullRequest,
+  checkPullRequestMergeability,
+} from "./githubClient.js";
+
 export async function analyzeRepository(
   repositoryPath: string
 ) {
+  // KEEP EVERYTHING BELOW EXACTLY AS IT IS
   const snapshot = await createSnapshot(repositoryPath);
   
   const repository = await generateRepositoryReport(snapshot);

@@ -1,4 +1,4 @@
-import dotenv from "dotenv";
+ import dotenv from "dotenv";
 import path from "node:path";
 import OpenAI from "openai";
 
@@ -41,8 +41,10 @@ export class OpenRouterProvider {
       ],
 
       temperature: 0.2,
+      max_tokens: 1500,
     });
 
     return response.choices[0]?.message?.content ?? "{}";
   }
 }
+ 
