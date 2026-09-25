@@ -3,7 +3,9 @@ import { Router } from "express";
 import {
   analyzePR,
   generateFix,
+  generateAllFixes,
   applyFix,
+  cancelPRExecution,
   autoFixPR,
 } from "../controllers/pr.controller.js";
 
@@ -22,10 +24,25 @@ router.post("/analyze", analyzePR);
 router.post("/generate-fix", generateFix);
 
 /* =========================================================
+   GENERATE ALL AI FIXES
+========================================================= */
+
+router.post(
+  "/generate-all-fixes",
+  generateAllFixes
+);
+
+/* =========================================================
    APPLY AI FIX
 ========================================================= */
 
 router.post("/apply-fix", applyFix);
+
+/* =========================================================
+   CANCEL AUTONOMOUS EXECUTION
+========================================================= */
+
+router.post("/cancel", cancelPRExecution);
 
 /* =========================================================
    AUTO FIX (ANALYZE + GENERATE + APPLY)

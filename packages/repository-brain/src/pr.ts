@@ -31,4 +31,8 @@ export interface PullRequest {
   changedFiles: number;
 
   files: PullRequestFile[];
+
+  merged: boolean;
+  mergeCommitSha: string | null;
+  mergedAt: string | null;
 }

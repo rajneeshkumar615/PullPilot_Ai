@@ -21,23 +21,72 @@ async function githubFetch<T>(
   url: string,
   options: RequestInit = {}
 ): Promise<T> {
-  const response = await fetch(url, {
-    ...options,
-    headers: {
-      ...headers(),
-      ...(options.headers ?? {}),
-    },
-  });
+  const maxAttempts = 3;
 
-  if (!response.ok) {
-    const body = await response.text();
+  let lastError: unknown;
 
-    throw new Error(
-      `GitHub API ${response.status}: ${body}`
-    );
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const response = await fetch(url, {
+        ...options,
+        headers: {
+          ...headers(),
+          ...(options.headers ?? {}),
+        },
+      });
+
+      if (!response.ok) {
+        const body = await response.text();
+
+        throw new Error(
+          `GitHub API ${response.status}: ${body}`
+        );
+      }
+
+      return response.json() as Promise<T>;
+    } catch (error) {
+      lastError = error;
+
+      const cause =
+        error instanceof Error ? error.cause : undefined;
+
+      const code =
+        cause &&
+        typeof cause === "object" &&
+        "code" in cause
+          ? String(
+              (cause as { code?: unknown }).code
+            )
+          : "";
+
+      const isTransientNetworkError =
+        code === "UND_ERR_CONNECT_TIMEOUT" ||
+        code === "ENOTFOUND" ||
+        code === "ECONNRESET" ||
+        code === "ETIMEDOUT" ||
+        code === "EAI_AGAIN";
+
+      if (
+        !isTransientNetworkError ||
+        attempt === maxAttempts
+      ) {
+        throw error;
+      }
+
+      const delay = attempt * 1000;
+
+      console.warn(
+        `PullPilot: GitHub request failed (${code || "network error"}). ` +
+        `Retrying in ${delay}ms... (${attempt}/${maxAttempts - 1})`
+      );
+
+      await new Promise((resolve) =>
+        setTimeout(resolve, delay)
+      );
+    }
   }
 
-  return response.json() as Promise<T>;
+  throw lastError;
 }
 
 /* =========================================================
@@ -59,6 +108,8 @@ export interface GitHubPullRequest {
   body: string | null;
   state: "open" | "closed";
   merged: boolean;
+  merge_commit_sha: string | null;
+  merged_at: string | null;
 
   user: {
     login: string;
@@ -148,11 +199,15 @@ export async function getPullRequest(
 
     baseBranch: pr.base.ref,
     headBranch: pr.head.ref,
-
     baseSha: pr.base.sha,
     headSha: pr.head.sha,
 
+    merged: pr.merged,
+    mergeCommitSha: pr.merge_commit_sha,
+    mergedAt: pr.merged_at,
+
     additions: pr.additions,
+
     deletions: pr.deletions,
     changedFiles: pr.changed_files,
 
@@ -183,11 +238,39 @@ export async function getRepositoryFile(
   sha: string;
   content: string;
 }> {
-  const result = await githubFetch<GitHubContent>(
-    `${GITHUB_API}/repos/${owner}/${repo}/contents/${encodeURIComponent(
-      path
-    )}?ref=${encodeURIComponent(ref)}`
-  );
+  if (!path.trim()) {
+    throw new Error("GitHub repository file path is empty.");
+  }
+
+  if (!ref.trim()) {
+    throw new Error(
+      `GitHub repository file ref is empty for ${path}.`
+    );
+  }
+
+  const encodedPath = path
+    .split("/")
+    .map((segment) => encodeURIComponent(segment))
+    .join("/");
+
+  let result: GitHubContent;
+
+  try {
+    result = await githubFetch<GitHubContent>(
+      `${GITHUB_API}/repos/${owner}/${repo}/contents/${encodedPath}?ref=${encodeURIComponent(
+        ref
+      )}`
+    );
+  } catch (error) {
+    const message =
+      error instanceof Error
+        ? error.message
+        : "Unknown GitHub API error.";
+
+    throw new Error(
+      `Unable to fetch GitHub file "${path}" at ref "${ref}": ${message}`
+    );
+  }
 
   if (result.type !== "file") {
     throw new Error(
@@ -197,14 +280,31 @@ export async function getRepositoryFile(
 
   if (!result.content) {
     throw new Error(
-      `GitHub returned no content for ${path}`
+      `GitHub returned no content for "${path}" at ref "${ref}".`
     );
   }
 
   const content = Buffer.from(
     result.content.replace(/\n/g, ""),
     "base64"
-  ).toString("utf8");
+  )
+    .toString("utf8")
+    .replace(/\r\n/g, "\n");
+
+  if (!content.trim()) {
+    throw new Error(
+      `GitHub returned an empty file for "${path}" at ref "${ref}".`
+    );
+  }
+
+  if (
+    result.path !== path &&
+    decodeURIComponent(result.path) !== path
+  ) {
+    throw new Error(
+      `GitHub returned unexpected file path "${result.path}" while requesting "${path}".`
+    );
+  }
 
   return {
     path: result.path,
@@ -212,7 +312,6 @@ export async function getRepositoryFile(
     content,
   };
 }
-
 /* =========================================================
   CREATE BRANCH
 ========================================================= */
@@ -330,7 +429,7 @@ export async function deleteRepositoryFile(
   ATOMIC MULTI-FILE COMMIT
 ========================================================= */
 
-export async function createCommitWithFiles(
+ export async function createCommitWithFiles(
   owner: string,
   repo: string,
   branch: string,
@@ -344,16 +443,41 @@ export async function createCommitWithFiles(
   commitSha: string;
   treeSha: string;
 }> {
-  // Get the current tree from the PR HEAD.
+  // Always read the CURRENT branch tip.
+  // Do not assume the original PR HEAD is still the branch tip.
+  const branchRef = await githubFetch<{
+    object: {
+      sha: string;
+    };
+  }>(
+    `${GITHUB_API}/repos/${owner}/${repo}/git/ref/heads/${encodeURIComponent(
+      branch
+    )}`
+  );
+
+  const currentBranchSha = branchRef.object.sha;
+
+  // Safety check:
+  // The branch must still start from the PR HEAD.
+  // If something unexpectedly moved the branch before this commit,
+  // stop instead of creating a divergent history.
+  if (currentBranchSha !== baseSha) {
+    throw new Error(
+      `PullPilot safety check failed: fix branch ${branch} moved unexpectedly. ` +
+        `Expected ${baseSha}, found ${currentBranchSha}.`
+    );
+  }
+
+  // Get the tree from the CURRENT branch commit.
   const baseCommit = await githubFetch<{
     tree: {
       sha: string;
     };
   }>(
-    `${GITHUB_API}/repos/${owner}/${repo}/git/commits/${baseSha}`
+    `${GITHUB_API}/repos/${owner}/${repo}/git/commits/${currentBranchSha}`
   );
 
-  // Create a new tree containing ALL changes.
+  // Create a new tree containing ALL validated changes.
   const tree = await githubFetch<{
     sha: string;
   }>(
@@ -372,7 +496,7 @@ export async function createCommitWithFiles(
     }
   );
 
-  // Create one atomic commit.
+  // Create one atomic commit whose parent is the ACTUAL branch tip.
   const commit = await githubFetch<{
     sha: string;
   }>(
@@ -382,7 +506,7 @@ export async function createCommitWithFiles(
       body: JSON.stringify({
         message,
         tree: tree.sha,
-        parents: [baseSha],
+        parents: [currentBranchSha],
       }),
     }
   );
@@ -448,6 +572,7 @@ export async function createPullRequest(
   };
 }
 
+
 /* =========================================================
   CHECK PULL REQUEST MERGEABILITY
 ========================================================= */
@@ -479,6 +604,127 @@ export async function checkPullRequestMergeability(
     state: pr.state,
     title: pr.title,
   };
+}
+
+/* =========================================================
+  CHECK PULL REQUEST CHECKS (CI STATUS)
+========================================================= */
+
+export interface GitHubCheckStatus {
+  total: number;
+  completed: number;
+  successful: number;
+  failed: number;
+  pending: number;
+}
+
+export async function checkPullRequestChecks(
+  owner: string,
+  repo: string,
+  ref: string
+): Promise<GitHubCheckStatus> {
+  const [checkRunsResult, statusResult] = await Promise.all([
+    githubFetch<{
+      total_count: number;
+      check_runs: Array<{
+        status: string;
+        conclusion: string | null;
+      }>;
+    }>(
+      `${GITHUB_API}/repos/${owner}/${repo}/commits/${encodeURIComponent(
+        ref
+      )}/check-runs`
+    ),
+
+    githubFetch<{
+      total_count: number;
+      statuses: Array<{
+        state: string;
+      }>;
+    }>(
+      `${GITHUB_API}/repos/${owner}/${repo}/commits/${encodeURIComponent(
+        ref
+      )}/status`
+    ),
+  ]);
+
+  const checkRuns = checkRunsResult.check_runs;
+  const statuses = statusResult.statuses;
+
+  const checkRunTotal = checkRunsResult.total_count;
+  const statusTotal = statusResult.total_count;
+
+  const completedCheckRuns = checkRuns.filter(
+    (check) => check.status === "completed"
+  );
+
+  const successfulCheckRuns = completedCheckRuns.filter(
+    (check) => check.conclusion === "success"
+  );
+
+  const failedCheckRuns = completedCheckRuns.filter(
+    (check) => check.conclusion !== "success"
+  );
+
+  const pendingCheckRuns = checkRuns.filter(
+    (check) => check.status !== "completed"
+  );
+
+  const successfulStatuses = statuses.filter(
+    (status) => status.state === "success"
+  );
+
+  const failedStatuses = statuses.filter(
+    (status) =>
+      status.state === "failure" ||
+      status.state === "error"
+  );
+
+  const pendingStatuses = statuses.filter(
+    (status) =>
+      status.state === "pending" ||
+      status.state === "queued"
+  );
+
+  return {
+    total: checkRunTotal + statusTotal,
+    completed:
+      completedCheckRuns.length +
+      (statusTotal - pendingStatuses.length),
+    successful:
+      successfulCheckRuns.length +
+      successfulStatuses.length,
+    failed:
+      failedCheckRuns.length +
+      failedStatuses.length,
+    pending:
+      pendingCheckRuns.length +
+      pendingStatuses.length,
+  };
+}
+
+/* =========================================================
+  MERGE PULL REQUEST
+========================================================= */
+
+export async function mergePullRequest(
+  owner: string,
+  repo: string,
+  pullNumber: number
+) {
+  return githubFetch<{
+    merged: boolean;
+    message: string;
+    sha?: string;
+  }>(
+    `${GITHUB_API}/repos/${owner}/${repo}/pulls/${pullNumber}/merge`,
+    {
+      method: "PUT",
+      body: JSON.stringify({
+        merge_method: "squash",
+      }),
+    }
+  );
 }
 
 /* =========================================================

@@ -5,12 +5,22 @@ import { parseAIResponse } from "./parser/aiResponseParser.js";
 import { buildInsights } from "./insightsEngine.js";
 import { calculateHealth } from "./healthScore.js";
 import { buildMetrics } from "./metrics.js";
-
+export {
+  createExecution,
+  cancelExecution,
+  isExecutionCancelled,
+  removeExecution,
+} from "./executionRegistry.js";
 export {
   analyzePullRequest,
   generatePRFix,
+  generatePRFixes,
   applyPRFix,
 } from "./prAnalyzer.js";
+
+export type PRExecutionMode =
+  | "human"
+  | "autonomous";
 
 export {
   getPullRequest,
